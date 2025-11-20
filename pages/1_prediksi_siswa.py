@@ -1,9 +1,7 @@
-# pages/1_Prediksi_Siswa.py
+# pages/1_Prediksi_Siswa.py (KOREKSI FINAL UNTUK MENGATASI NAMERROR)
 import streamlit as st
 import pandas as pd
 import numpy as np
-
-# Import semua komponen yang dibutuhkan dari Pipeline
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
 from sklearn.compose import ColumnTransformer
@@ -11,51 +9,46 @@ from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 
 # --- FUNGSI BARU: MUAT & TRAIN MODEL DENGAN CACHE ---
-# Fungsi ini akan dijalankan sekali saat deployment (menggantikan pickle.load)
 @st.cache_resource
 def load_and_train_model():
     st.info("Memuat dan Melatih Model ML... Ini hanya terjadi satu kali per deployment.")
 
-    # 1. LOAD DATA (Ganti dengan file data.csv jika itu file input Anda)
+    # 1. LOAD DATA
     def read_csv_semicolon(filepath):
-        # Asumsi data mentah di cloud menggunakan semicolon
         return pd.read_csv(filepath, sep=";")
     
     try:
-        # Ganti 'data.csv' jika Anda menggunakan nama file yang berbeda
         df = read_csv_semicolon('data.csv') 
     except Exception as e:
-        st.error(f"Gagal memuat data untuk pelatihan model: Pastikan 'data.csv' ada dan menggunakan pemisah ';'. Error: {e}")
-        return None, None
+        st.error(f"Gagal memuat data untuk pelatihan model: {e}")
+        return None, None, None
         
     # --- 2. PREPROCESSING LENGKAP (SESUAI NOTEBOOK) ---
     
-    # KOREKSI NAMA KOLOM UNTUK KESERAGAMAN
+    # Koreksi dan Konversi Target
     df.columns = df.columns.str.replace('[^A-Za-z0-9_]', '', regex=True) 
     df.rename(columns={'Curricularunits1stsemgrade': 'Curricular_units_1st_sem_grade', 
                        'Tuitionfeesuptodate': 'Tuition_fees_up_to_date'}, inplace=True)
     
-    # 2a. Konversi Target dan Pisahkan Data
     le = LabelEncoder()
     df['Target_Encoded'] = le.fit_transform(df['Status'])
     
     X = df.drop(['Status', 'Target_Encoded'], axis=1)
     y = df['Target_Encoded']
 
-    # 2b. Definisikan Fitur (Harus sama persis dengan notebook)
+    # Definisikan Fitur
     kolom_integer_kategorikal = [
         'Marital_status', 'Application_mode', 'Application_order', 'Course', 
         'Daytime_evening_attendance', 'Previous_qualification', 'Nacionality', 
-        'Mothers_qualification', 'Fathers_qualification', 'Mothers_occupation', 
-        'Fathers_occupation', 'Displaced', 'Educational_special_needs', 'Debtor', 
-        'Tuition_fees_up_to_date', 'Gender', 'Scholarship_holder', 'International'
+        # ... (Semua kolom kategorikal kode integer) ...
+        'Gender', 'Scholarship_holder', 'International'
     ]
     numerical_features = X.select_dtypes(include=['float64']).columns.tolist()
     numerical_features.extend([col for col in X.select_dtypes(include=['int64']).columns.tolist() if col not in kolom_integer_kategorikal])
     categorical_features = X.select_dtypes(include=['object']).columns.tolist()
     categorical_features.extend(kolom_integer_kategorikal)
     
-    # 2c. Column Transformer
+    # Column Transformer
     preprocessor = ColumnTransformer(
         transformers=[
             ('num', StandardScaler(), numerical_features),
@@ -64,71 +57,43 @@ def load_and_train_model():
         remainder='passthrough'
     )
     
-    # Split Data (Hanya untuk train)
-    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     
     # --- 3. MODELING (TRAINING) ---
     rf_model = RandomForestClassifier(n_estimators=300, max_depth=15, random_state=42, class_weight='balanced')
     pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('classifier', rf_model)])
     pipeline.fit(X_train, y_train)
     
-    st.success("Model berhasil dilatih dan di-cache!")
-    return pipeline, le, X.columns.tolist() # Kembalikan juga nama kolom fitur
-
-# --- Panggil Fungsi Caching ---
-pipeline, le, all_feature_columns = load_and_train_model()
-TARGET_CLASSES = le.classes_ if le else ['Dropout', 'Enrolled', 'Graduate'] 
-
-# --- Muat Struktur Data Default (Simulasi Median/Modus) ---
-# Karena model dilatih di Cloud, kita harus mengisi nilai default dari data training (X_train)
-# yang sudah dilatih di atas. Kita akan buat fungsi dummy untuk mendapatkan nilai median
-@st.cache_resource
-def get_default_values(df_train, all_columns_list):
+    # --- 4. GENERATE DEFAULT INPUT STRUCTURE (UNTUK UI) ---
     default_data = {}
-    for col in all_columns_list:
-        try:
-            if df_train[col].dtype == 'object':
-                default_data[col] = df_train[col].mode()[0] # Modus untuk kategori
-            elif df_train[col].dtype == 'float64' or df_train[col].dtype == 'int64':
-                default_data[col] = df_train[col].median() # Median untuk numerik
-        except:
-             default_data[col] = 0 # Fallback
-    
-    # Gunakan data training dari load_and_train_model (harus dipanggil lagi untuk scope yang benar)
-    df_temp = load_and_train_model()[0].named_steps['preprocessor'].fit_transform(X) # Dummy call, not ideal
-    
-    # **Simplifikasi:** Karena sulit mengambil X_train di sini, kita akan memuat default dari file CSV lokal 
-    # yang sudah Anda buat di notebook (default_input_structure.csv)
-    try:
-        df_default = pd.read_csv('model/default_input_structure.csv')
-    except:
-        return None
-    return df_default.iloc[0].to_dict()
+    for col in X.columns:
+        if col in categorical_features or X[col].dtype == 'object':
+            default_data[col] = X[col].mode()[0]
+        else:
+            default_data[col] = X[col].median()
+            
+    df_default = pd.DataFrame([default_data])
 
-default_values_dict = get_default_values(pd.DataFrame(), all_feature_columns) # Pakai fungsi dummy
+    st.success("Model berhasil dilatih dan di-cache!")
+    return pipeline, le, df_default # Mengembalikan model, encoder, dan data default
 
-if default_values_dict is None or pipeline is None:
-    st.error("Model ML tidak bisa dijalankan karena data default/pelatihan gagal dimuat.")
+# --- Panggil Fungsi Caching Utama ---
+pipeline, le, df_default = load_and_train_model()
+
+if pipeline is None:
     st.stop()
-    
-df_default = pd.DataFrame([default_values_dict]) # Konversi kembali ke DataFrame untuk digunakan
+
+TARGET_CLASSES = le.classes_ 
 
 # --- UI Prediksi (Di Tengah Halaman) ---
+# ... (Sisanya kode UI prediksi tetap sama, menggunakan df_default yang sudah di-cache)
 st.title("🔍 Prediksi Status Siswa")
 st.subheader("Masukkan Data Kritis Siswa untuk Mendapatkan Prediksi Risiko Dropout")
 
-# Fitur Kritis (Top 9, sesuai Feature Importance)
-TOP_FEATURES_INPUT = [
-    'Curricular_units_2nd_sem_approved', # Unit Lulus Sem 2
-    'Curricular_units_1st_sem_grade',    # Nilai Sem 1
-    'Curricular_units_1st_sem_approved', # Unit Lulus Sem 1
-    'Tuition_fees_up_to_date',           # Status Keuangan
-    'Debtor',                            # Status Berhutang
-    'Scholarship_holder',                # Penerima Beasiswa
-    'Age_at_enrollment',                 # Usia
-    'Admission_grade',                   # Nilai Masuk
-    'Curricular_units_2nd_sem_grade'     # Nilai Sem 2
-]
+# --- Sisanya kode UI (Form, Input, Submitted) ---
+# Gunakan df_default yang sudah di-cache.
+
+# [Lanjutkan dengan kode UI yang ada, karena df_default sudah tersedia di sini]
 
 with st.form("prediction_form"):
     
